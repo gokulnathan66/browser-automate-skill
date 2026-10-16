@@ -19,10 +19,14 @@ describe("repo safety", () => {
   });
 
   it("list_profiles.py output has no cookie values", () => {
+    const chromeFixture = path.join(root, "tests/fixtures/chrome");
     const out = execSync(`python3 "${path.join(scripts, "list_profiles.py")}" --site wellfound.com`, {
       encoding: "utf8",
+      env: { ...process.env, BROWSER_AUTOMATE_CHROME_DIR: chromeFixture },
     });
     assert.match(out, /cookies:/);
+    assert.match(out, /_wellfound/);
+    assert.doesNotMatch(out, /plaintext-should-never-print/);
     assert.doesNotMatch(out, /=[A-Za-z0-9._-]{20,}/);
   });
 

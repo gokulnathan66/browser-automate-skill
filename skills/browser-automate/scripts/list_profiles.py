@@ -12,7 +12,10 @@ import shutil
 import sqlite3
 import tempfile
 
-CHROME_DIR = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+CHROME_DIR = os.environ.get(
+    "BROWSER_AUTOMATE_CHROME_DIR",
+    os.path.expanduser("~/Library/Application Support/Google/Chrome"),
+)
 
 
 def profiles():
