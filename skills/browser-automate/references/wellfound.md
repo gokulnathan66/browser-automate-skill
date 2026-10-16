@@ -30,10 +30,10 @@ The script picks only exact or alias matches. Wellfound hides tags already on th
 
 ## Batch script
 
-With the cloned Chrome running on port 9333:
+After `launch_profile_chrome.sh`, use the printed session id:
 
 ```bash
-node scripts/wellfound_add_skills.js Python JavaScript SQL "C++" "Machine Learning" LangChain FastAPI \
+node scripts/wellfound_add_skills.js --session <SESSION_ID> Python JavaScript SQL "C++" "Machine Learning" LangChain FastAPI \
   Django React "Node.js" Express.js AWS Docker Kubernetes PostgreSQL MySQL MongoDB DynamoDB \
   HTML CSS REST Git "Power BI" "Prompt Engineering"
 ```

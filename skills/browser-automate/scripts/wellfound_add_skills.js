@@ -1,49 +1,49 @@
 #!/usr/bin/env node
-// Add skills to the Wellfound profile through the cloned Chrome's CDP port.
-// Picks Wellfound's existing tags, skips "New ..." free-text entries, then reloads and prints the saved list.
+// Add skills to the Wellfound profile through a browser-automate CDP session.
 //
-// Usage: node wellfound_add_skills.js [--port 9333] [--remove "Exact Chip Text"] Python Docker "Power BI" ...
+// Usage:
+//   node wellfound_add_skills.js --session <SESSION_ID> [--remove "Tag"] Python Docker ...
+//   node wellfound_add_skills.js --port <PORT> ...   # legacy; prefer --session
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { chromium } = require(require("./resolve_playwright.js")());
+const { label, wantedNames, choose } = require("./wellfound_lib.js");
 
 const SKILL_INPUT = 'input[placeholder="e.g. Python, React"]';
 const CHIP = "span[class*='styles_component']";
 
-const ALIASES = {
-  "power bi": ["microsoft power bi"],
-  "react": ["react.js"],
-  "express": ["express.js"],
-  "rest api": ["rest", "rest apis"],
-  "postgres": ["postgresql"],
-};
-
 function parseArgs(argv) {
-  const out = { port: 9333, remove: [], skills: [] };
+  const out = { port: null, sessionId: null, remove: [], skills: [] };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--port") out.port = Number(argv[++i]);
+    else if (argv[i] === "--session") out.sessionId = argv[++i];
     else if (argv[i] === "--remove") out.remove.push(argv[++i]);
     else out.skills.push(argv[i]);
   }
   return out;
 }
 
-const label = raw => raw.replace(/\d[\d,]*\s*followers?/i, "").replace(/\s+/g, " ").trim();
-
-const wantedNames = query => {
-  const q = query.toLowerCase();
-  return [q, ...(ALIASES[q] || [])];
-};
-
-// Exact or alias matches only: Wellfound hides tags already on the profile from suggestions,
-// so a prefix fallback would pick a different tag (e.g. "Python" -> "Python Flask").
-function choose(query, options) {
-  const wanted = wantedNames(query);
-  return options.map(label).find(n => wanted.includes(n.toLowerCase())) || null;
+function resolvePort({ port, sessionId }) {
+  if (port) return port;
+  if (!sessionId) {
+    console.error("Pass --session <SESSION_ID> (from launch_profile_chrome.sh) or --port");
+    process.exit(2);
+  }
+  const file = path.join(os.tmpdir(), "browser-automate-sessions", `${sessionId}.json`);
+  if (!fs.existsSync(file)) {
+    console.error(`No session file: ${file}`);
+    process.exit(1);
+  }
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  return data.port;
 }
 
-// Each chip change autosaves; firing the next change before that request returns can drop one.
 async function clickAndAwaitSave(page, locator) {
   const saved = page
-    .waitForResponse(r => r.request().method() === "POST" && r.url().includes("wellfound.com"), { timeout: 5000 })
+    .waitForResponse(r => r.request().method() === "POST" && r.url().includes("wellfound.com"), {
+      timeout: 5000,
+    })
     .catch(() => null);
   await locator.click();
   await saved;
@@ -64,14 +64,30 @@ async function readSkills(page) {
   }, SKILL_INPUT);
 }
 
+function verifySaved(saved, added, remove) {
+  const lower = new Set(saved.map(s => s.toLowerCase()));
+  for (const entry of added) {
+    const pick = entry.split(" -> ")[1];
+    if (!pick || !lower.has(pick.toLowerCase())) {
+      throw new Error(`After reload, expected skill "${pick}" on profile`);
+    }
+  }
+  for (const text of remove) {
+    if (lower.has(text.toLowerCase())) {
+      throw new Error(`After reload, removed skill "${text}" is still present`);
+    }
+  }
+}
+
 (async () => {
-  const { port, remove, skills } = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2));
+  const port = resolvePort(args);
+  const { remove, skills } = args;
+
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
   const context = browser.contexts()[0];
   let page = context.pages().find(p => p.url().includes("wellfound.com"));
-  if (!page) {
-    page = await context.newPage();
-  }
+  if (!page) page = await context.newPage();
   if (!page.url().includes("/profile/edit")) {
     await page.goto("https://wellfound.com/profile/edit", { waitUntil: "domcontentloaded" });
   }
@@ -89,9 +105,7 @@ async function readSkills(page) {
   const skipped = [];
 
   for (const query of skills) {
-    if (wantedNames(query).some(n => existing.has(n))) {
-      continue;
-    }
+    if (wantedNames(query).some(n => existing.has(n.toLowerCase()))) continue;
     await input.click();
     await input.fill("");
     await page.keyboard.type(query, { delay: 40 });
@@ -114,7 +128,10 @@ async function readSkills(page) {
   }
 
   for (const text of remove) {
-    const chip = page.locator(CHIP).filter({ hasText: new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") }).first();
+    const chip = page
+      .locator(CHIP)
+      .filter({ hasText: new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") })
+      .first();
     if (await chip.count()) {
       await clickAndAwaitSave(page, chip.locator('[role="button"]'));
     }
@@ -122,11 +139,10 @@ async function readSkills(page) {
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator(SKILL_INPUT).waitFor({ timeout: 15000 });
-  await page.locator(SKILL_INPUT).scrollIntoViewIfNeeded();
   const saved = await readSkills(page);
-  await page.screenshot({ path: "/tmp/wellfound-skills.png" });
+  verifySaved(saved, added, remove);
 
-  console.log(JSON.stringify({ added, skipped, saved, screenshot: "/tmp/wellfound-skills.png" }, null, 2));
+  console.log(JSON.stringify({ added, skipped, saved }, null, 2));
   process.exit(0);
 })().catch(err => {
   console.error(err);

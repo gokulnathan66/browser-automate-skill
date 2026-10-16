@@ -1,59 +1,58 @@
 # browser-automate-skill
 
-An agent skill for Claude Code and Cursor. It lets an agent drive **your real, signed-in Google Chrome profile** with Playwright on macOS, so automation runs as you instead of in a blank, logged-out browser.
-
-Playwright MCP and similar tools start Chrome with a throwaway profile, so every site shows its login page. Your real profile can't be attached while Chrome is open: the folder is locked, and Chrome won't open a debugging port on its default data directory. This skill copies one profile's login state (cookies, preferences) into a temp directory, launches a second Chrome on it with a DevTools port, and connects Playwright over CDP. Your normal Chrome keeps running.
-
-It ships with one site recipe: **filling the Wellfound profile "Your Skills" section** from your resume, using Wellfound's canonical tags.
+An agent skill for Claude Code and Cursor. It drives **your real, signed-in Google Chrome profile** with Playwright on macOS, using a private temp copy of login state and a loopback CDP port.
 
 ## Install
 
 ```bash
 git clone https://github.com/gokulnathan66/browser-automate-skill.git
 cd browser-automate-skill
-./install.sh            # links into ~/.claude/skills and ~/.cursor/skills
+npm ci
+./install.sh
 ```
 
-Requirements: macOS, Google Chrome, Node 18+, Python 3, and a `playwright` npm package (`npm i -g playwright`, or the copy Playwright MCP already put in `~/.npm/_npx`).
+Requirements: macOS, Google Chrome, Node 18+, Python 3. Playwright is pinned in `package.json` (run `npm ci` from the repo root).
 
 ## Use
 
-Ask your agent things like:
-
-- "Fill my Wellfound skills from my resume, use my gokulnathanb0 Chrome profile"
-- "Update my LinkedIn headline using my logged-in Chrome, not a fresh browser"
-
-Manual run:
-
 ```bash
 cd skills/browser-automate
-python3 scripts/list_profiles.py --site wellfound.com        # pick a profile folder
-scripts/launch_profile_chrome.sh Default https://wellfound.com/profile/edit &
-node scripts/wellfound_add_skills.js Python Docker "Power BI" React
-scripts/cleanup.sh                                           # quit clone, delete temp profile
+python3 scripts/list_profiles.py --site wellfound.com
+scripts/launch_profile_chrome.sh "Default" "https://wellfound.com/profile/edit"   # background
+# note SESSION_ID=... and CDP port from output
+node scripts/wellfound_add_skills.js --session <SESSION_ID> Python Docker "Power BI"
+scripts/cleanup.sh --session <SESSION_ID>
 ```
+
+Stale sessions (>15 minutes) are removed on the next launch, or run `scripts/cleanup.sh --stale`.
+
+## Safety (read this)
+
+- The clone holds **live session cookies** until cleanup.
+- CDP listens on **127.0.0.1** only, but any local process can control the signed-in window while the session is open.
+- Agents must **confirm with you** before Publish, pay, delete, message, apply, or security changes.
+- Verify the **visible username** on the site matches the account you intended.
 
 ## Layout
 
 ```
 skills/browser-automate/
-├── SKILL.md                      workflow the agent follows
+├── SKILL.md
 ├── scripts/
-│   ├── list_profiles.py          profiles, accounts, per-site cookies
-│   ├── launch_profile_chrome.sh  clone profile + launch Chrome with CDP
-│   ├── resolve_playwright.js     find an installed playwright package
-│   ├── wellfound_add_skills.js   Wellfound skills recipe
-│   └── cleanup.sh                quit clone, remove temp profile
-└── references/
-    ├── wellfound.md
-    └── troubleshooting.md
+│   ├── launch_profile_chrome.sh
+│   ├── cleanup.sh
+│   ├── copy_chrome_login.py
+│   ├── list_profiles.py
+│   ├── wellfound_add_skills.js
+│   └── ...
+└── references/          # per-site editor notes
 ```
 
-## Safety
+## Tests
 
-- The cloned profile holds live session cookies. `cleanup.sh` deletes it, so run it when you're done.
-- Clones work only on the same Mac and macOS user, because cookies are encrypted with that user's Keychain key.
-- Nothing is uploaded anywhere; the scripts only read your local Chrome files and talk to `127.0.0.1`.
+```bash
+npm test
+```
 
 ## License
 

@@ -1,68 +1,120 @@
 #!/usr/bin/env bash
-# Clone a Chrome profile's login state into a temp data dir and launch Chrome on it with a CDP port.
-# Blocks while Chrome runs, so start it in the background.
+# Clone a Chrome profile's login state and launch Chrome with loopback CDP.
 #
-# Usage: launch_profile_chrome.sh <profile-folder> [start-url] [port]
-#   launch_profile_chrome.sh "Default" "https://wellfound.com/profile/edit" 9333
+# Usage: launch_profile_chrome.sh <profile-folder> [start-url] [port-for-tests-only]
+# Prints SESSION_ID and CDP URL; blocks until Chrome exits.
 set -euo pipefail
 
-PROFILE="${1:?profile folder required, e.g. Default or 'Profile 1' (see list_profiles.py)}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=session_common.sh
+source "$SCRIPT_DIR/session_common.sh"
+
+PROFILE="${1:?profile folder required (see list_profiles.py)}"
 URL="${2:-about:blank}"
-PORT="${3:-9333}"
+TEST_PORT="${3:-}"
 
 CHROME_APP="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-SRC="$HOME/Library/Application Support/Google/Chrome"
-DST="/tmp/browser-automate-chrome-$PORT"
+
+validate_profile_folder "$PROFILE"
+validate_start_url "$URL"
+session_ensure_root
+cleanup_stale_sessions
 
 [[ -x "$CHROME_APP" ]] || { echo "Google Chrome not found at $CHROME_APP" >&2; exit 1; }
-[[ -d "$SRC/$PROFILE" ]] || { echo "No Chrome profile folder: $SRC/$PROFILE" >&2; exit 1; }
-
-if curl -sf --max-time 1 "http://127.0.0.1:$PORT/json/version" >/dev/null; then
-  echo "Port $PORT already has a DevTools endpoint; reuse it or run cleanup.sh $PORT" >&2
+[[ -d "$HOME/Library/Application Support/Google/Chrome/$PROFILE" ]] || {
+  echo "No Chrome profile folder: $PROFILE" >&2
   exit 1
-fi
+}
 
-rm -rf "$DST"
-mkdir -p "$DST/Default"
-cp "$SRC/Local State" "$DST/Local State"
-cp "$SRC/$PROFILE/Preferences" "$DST/Default/Preferences"
-cp "$SRC/$PROFILE/Secure Preferences" "$DST/Default/Secure Preferences" 2>/dev/null || true
-if [[ -f "$SRC/$PROFILE/Cookies" ]]; then
-  cp "$SRC/$PROFILE/Cookies" "$DST/Default/Cookies"
+DATA_DIR="$(mktemp -d "$SESSION_ROOT/chrome.XXXXXX")"
+chmod 700 "$DATA_DIR"
+
+if [[ -n "$TEST_PORT" ]]; then
+  PORT="$TEST_PORT"
+  if curl -sf --max-time 1 "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; then
+    echo "Port $PORT already in use" >&2
+    rm -rf "$DATA_DIR"
+    exit 1
+  fi
 else
-  mkdir -p "$DST/Default/Network"
-  cp "$SRC/$PROFILE/Network/Cookies" "$DST/Default/Network/Cookies"
+  PORT="$(find_free_port)"
 fi
 
-python3 - "$DST/Default/Preferences" <<'PY'
-import json, sys
-path = sys.argv[1]
-with open(path) as f:
-    prefs = json.load(f)
-prefs.pop("extensions", None)
-with open(path, "w") as f:
-    json.dump(prefs, f)
-email = (prefs.get("account_info") or [{}])[0].get("email", "?")
-print(f"Cloned profile for {email}")
+EMAIL="$(python3 "$SCRIPT_DIR/copy_chrome_login.py" "$PROFILE" "$DATA_DIR")" || {
+  rm -rf "$DATA_DIR"
+  exit 1
+}
+echo "Cloned profile for $EMAIL"
+
+SESSION_ID="$(python3 - <<PY
+import secrets
+print(secrets.token_hex(8))
 PY
+)"
+SESSION_FILE="$(session_file_path "$SESSION_ID")"
+EXPECTED_HOST="$(url_host "$URL")"
+STARTED_AT="$(date +%s)"
 
-(
-  for _ in $(seq 1 40); do
-    if curl -sf --max-time 1 "http://127.0.0.1:$PORT/json/version" >/dev/null; then
-      echo "CDP ready on http://127.0.0.1:$PORT"
-      exit 0
-    fi
-    sleep 0.5
-  done
-  echo "CDP did not come up on port $PORT" >&2
-) &
+CDP_READY=0
+CHROME_PID=0
 
-exec "$CHROME_APP" \
-  --user-data-dir="$DST" \
+session_teardown() {
+  [[ "$CHROME_PID" -gt 0 ]] && kill_session_pid "$CHROME_PID"
+  rm -f "$SESSION_FILE"
+  if [[ -n "${DATA_DIR:-}" ]]; then
+    remove_session_data_dir "$DATA_DIR" 2>/dev/null || rm -rf "$DATA_DIR"
+  fi
+}
+
+trap session_teardown EXIT INT TERM
+
+"$CHROME_APP" \
+  --user-data-dir="$DATA_DIR" \
   --profile-directory=Default \
+  --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port="$PORT" \
   --no-first-run \
   --no-default-browser-check \
   --disable-sync \
   --disable-extensions \
-  "$URL"
+  "$URL" &
+CHROME_PID=$!
+
+python3 - "$SESSION_FILE" <<PY
+import json, os, sys
+path, data = sys.argv[1], {
+    "session_id": "$SESSION_ID",
+    "data_dir": "$DATA_DIR",
+    "port": int("$PORT"),
+    "chrome_pid": int("$CHROME_PID"),
+    "started_at": int("$STARTED_AT"),
+    "expected_host": "$EXPECTED_HOST",
+    "profile_folder": "$PROFILE",
+    "profile_email": "$EMAIL",
+}
+with open(path, "w") as f:
+    json.dump(data, f)
+os.chmod(path, 0o600)
+PY
+
+for _ in $(seq 1 40); do
+  if curl -sf --max-time 1 "http://127.0.0.1:$PORT/json/version" >/dev/null; then
+    CDP_READY=1
+    echo "SESSION_ID=$SESSION_ID"
+    echo "CDP ready on http://127.0.0.1:$PORT"
+    break
+  fi
+  if ! kill -0 "$CHROME_PID" 2>/dev/null; then
+    echo "Chrome exited before CDP was ready" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+
+if [[ "$CDP_READY" -ne 1 ]]; then
+  echo "CDP did not come up on port $PORT" >&2
+  exit 1
+fi
+
+wait "$CHROME_PID" || true
+trap - EXIT INT TERM

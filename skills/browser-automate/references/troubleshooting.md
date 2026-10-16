@@ -1,31 +1,38 @@
 # Troubleshooting
 
-## The site still shows its login page
+## Login page still appears
 
-- You're in Playwright MCP's own browser (`~/Library/Caches/ms-playwright-mcp/...`), not the clone. Close it (`browser_close`) and connect to the clone over CDP instead.
-- You cloned the wrong profile. Run `list_profiles.py --site <domain>` and pick the folder whose cookies include the site's session cookie.
-- The cookies were copied, but the site binds the session to something else, such as device-bound sessions or local storage. Ask the user to sign in once in the cloned window; it persists until cleanup.
+- You are in Playwright MCP's empty profile, not the clone. Close it and use CDP against the session port from `launch_profile_chrome.sh`.
+- Wrong Chrome profile folder. Run `list_profiles.py --site <domain>` and pick the folder with session cookies.
+- Cookies copied but the site needs local storage: sign in once in the clone, then retry (still same Mac user only).
 
-## `ECONNREFUSED 127.0.0.1:9333`
+## `ECONNREFUSED` on the CDP port
 
-The cloned Chrome isn't running. The usual cause is starting `launch_profile_chrome.sh` in the foreground: when the shell call timed out or returned, Chrome died with it. Start it in the background and wait for `CDP ready`.
+- Launch script not running or exited. Start `launch_profile_chrome.sh` in the background and wait for `CDP ready`.
+- Session already cleaned up. Launch again and use the new `SESSION_ID`.
 
-## Shell hangs after the Playwright script finishes
+## Wrong account on the site
 
-`connectOverCDP` keeps Node's event loop alive. End the script with `process.exit(0)`, and don't call `browser.close()` unless you want Chrome closed.
+- Profile folder does not match the user's intended Google account. List profiles and cookies per site; verify the visible username before acting.
 
-## Why not attach to the real profile directly?
+## Shell hangs after a Node script
 
-- Chrome won't enable `--remote-debugging-port` on its default data directory, and the real one is already in use by the running Chrome.
-- Pointing Playwright `launchPersistentContext` at `~/Library/Application Support/Google/Chrome` fails with a lock error while Chrome is open, and quitting the user's browser to free it is disruptive.
+- `connectOverCDP` keeps the event loop open. End with `process.exit(0)`. Do not call `browser.close()` unless you intend to close Chrome.
 
-Cloning the login files avoids both problems.
+## Session or temp dir left behind
 
-## AppleScript errors (if you tried the osascript route)
+- Run `scripts/cleanup.sh --session <SESSION_ID>` or `scripts/cleanup.sh --stale`.
+- Crashed runs: stale cleanup on next launch removes sessions older than 15 minutes.
 
-- "Executing JavaScript through AppleScript is turned off": the setting is View > Developer > Allow JavaScript from Apple Events, and it's stored per profile. It's easy to enable on a different profile than the one whose tab you're scripting. The CDP route doesn't need it.
-- "osascript is not allowed assistive access": System Events UI scripting needs Accessibility permission for the terminal app. Don't route around this. The CDP route doesn't need it either.
+## CDP security
 
-## Cookies don't decrypt (signed out in the clone on another machine)
+The debugging port listens on loopback only, but **any local process** on your Mac can connect to it while the session is open. Do not share the port or leave a session running unattended.
 
-Chrome cookies are encrypted with the "Chrome Safe Storage" Keychain key of the macOS user. A clone works only on the same Mac and the same user. Copying a profile to another machine signs you out.
+## AppleScript errors
+
+- "Executing JavaScript through AppleScript is turned off": enable per profile under View → Developer, or use this CDP workflow instead.
+- "osascript is not allowed assistive access": not needed for CDP.
+
+## Clones on another machine
+
+Cookie encryption uses this Mac's Keychain user. Copies do not decrypt on another machine or another OS user.

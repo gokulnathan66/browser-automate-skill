@@ -1,11 +1,15 @@
-// Returns a path that require() can load as the playwright package.
-// Order: local/global install, then the npx cache Playwright MCP leaves behind.
+// Resolve playwright from this repo's node_modules, then a global npm install.
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const { execSync } = require("child_process");
 
 module.exports = function resolvePlaywright() {
+  const repoRoot = path.resolve(__dirname, "../../..");
+  const local = path.join(repoRoot, "node_modules", "playwright");
+  if (fs.existsSync(path.join(local, "package.json"))) {
+    return local;
+  }
+
   try {
     return require.resolve("playwright");
   } catch {}
@@ -16,15 +20,7 @@ module.exports = function resolvePlaywright() {
     if (fs.existsSync(path.join(candidate, "package.json"))) return candidate;
   } catch {}
 
-  const npxDir = path.join(os.homedir(), ".npm", "_npx");
-  if (fs.existsSync(npxDir)) {
-    const hits = fs
-      .readdirSync(npxDir)
-      .map(d => path.join(npxDir, d, "node_modules", "playwright"))
-      .filter(p => fs.existsSync(path.join(p, "package.json")))
-      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-    if (hits.length) return hits[0];
-  }
-
-  throw new Error("playwright not found; run: npm i -g playwright");
+  throw new Error(
+    "playwright not found; from repo root run: npm ci (or npm install)"
+  );
 };
