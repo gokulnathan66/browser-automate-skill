@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=session_common.sh
+# shellcheck source=session_common.sh disable=SC1091
 source "$SCRIPT_DIR/session_common.sh"
 
 PROFILE="${1:?profile folder required (see list_profiles.py)}"

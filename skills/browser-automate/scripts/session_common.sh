@@ -97,7 +97,7 @@ remove_session_data_dir() {
 cleanup_one_session_file() {
   local file="$1"
   [[ -f "$file" ]] || return 0
-  local dir port pid
+  local dir pid
   dir="$(python3 - "$file" <<'PY'
 import json, sys
 with open(sys.argv[1]) as f:

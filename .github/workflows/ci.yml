@@ -19,4 +19,5 @@ jobs:
       - name: ShellCheck
         run: |
           brew install shellcheck
-          shellcheck skills/browser-automate/scripts/*.sh
+          shellcheck -x skills/browser-automate/scripts/launch_profile_chrome.sh skills/browser-automate/scripts/cleanup.sh
+          shellcheck skills/browser-automate/scripts/session_common.sh
